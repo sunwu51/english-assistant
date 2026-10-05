@@ -1,0 +1,12 @@
+{
+  "name": "english-assistant-marketplace",
+  "description": "Bilingual language assistance for Claude Code",
+  "owner": { "name": "sunwu51" },
+  "plugins": [
+    {
+      "name": "english-assistant",
+      "source": "./",
+      "description": "Context-aware bilingual translation and draft correction for Claude Code Mods"
+    }
+  ]
+}

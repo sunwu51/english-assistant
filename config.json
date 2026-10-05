@@ -1,0 +1,23 @@
+{
+  "endpoint": "http://localhost:4444/v1/responses",
+  "model": "deepseek-flash",
+  "protocol": "responses",
+  "apiKey": "",
+  "apiKeyEnv": "",
+  "authType": "auto",
+  "jsonMode": true,
+  "reasoningEffort": "none",
+  "anthropicVersion": "2023-06-01",
+  "debounceMs": 1000,
+  "requestTimeoutMs": 15000,
+  "contextMessages": 4,
+  "contextMaxChars": 6000,
+  "draftMaxChars": 6000,
+  "replySegmentChars": 2200,
+  "maxOutputTokens": 2200,
+  "cacheEntries": 40,
+  "glossary": {},
+  "enabled": true,
+  "translateReplies": true,
+  "autoOpenReplyPane": false
+}

@@ -1,0 +1,6 @@
+config.local.json
+.claude-plugin/types/
+debug-report.json
+debug-protocol-report.json
+node_modules/
+*.log
