@@ -1,6 +1,6 @@
 {
   "name": "english-assistant",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Context-aware Chinese/English translation and draft editing through a local Responses API",
   "author": { "name": "sunwu51" },
   "repository": "https://github.com/sunwu51/english-assistant",

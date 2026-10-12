@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULTS, contextFromMessages, protectLiterals, restoreLiterals, replySegments, responseJson, eligibleDraft, choicesFor, validateDraft, hasComposerReferences, parseConfig, draftRequest, requestHeaders, normalizedUsage } from '../hooks/core.js';
+import { DEFAULTS, contextFromMessages, protectLiterals, restoreLiterals, replySegments, replyRequest, responseJson, eligibleDraft, choicesFor, validateDraft, hasComposerReferences, parseConfig, draftRequest, requestHeaders, normalizedUsage } from '../hooks/core.js';
 import { register } from '../hooks/register.js';
 
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
@@ -142,17 +142,56 @@ test('protocol adapters use the appropriate request and response formats', () =>
     const cfg = parseConfig({ protocol });
     const { body } = draftRequest('检查函数', [], cfg);
     assert.deepEqual(responseJson(raw, protocol), value);
-    if (protocol === 'responses') assert.equal(body.text.format.type, 'json_object');
+    if (protocol === 'responses') assert.equal(body.text.format.type, 'json_schema');
     else {
       assert.equal(body.max_tokens, cfg.maxOutputTokens); assert.equal(body.input, undefined);
-      if (protocol === 'messages') { assert.equal(body.messages[0].role, 'user'); assert.equal(body.response_format, undefined); assert.equal(body.thinking.type, 'disabled'); }
-      else { assert.equal(body.messages[0].role, 'system'); assert.equal(body.response_format.type, 'json_object'); }
+      if (protocol === 'messages') { assert.equal(body.messages[0].role, 'user'); assert.equal(body.response_format, undefined); assert.equal(body.thinking.type, 'disabled'); assert.equal(body.output_config.format.type, 'json_schema'); }
+      else { assert.equal(body.messages[0].role, 'system'); assert.equal(body.response_format.type, 'json_schema'); }
     }
     const compatible = draftRequest('检查函数', [], { ...cfg, jsonMode: false, reasoningEffort: null }).body;
-    assert.equal(compatible.text, undefined); assert.equal(compatible.response_format, undefined); assert.equal(compatible.reasoning, undefined);
+    assert.equal(compatible.text, undefined); assert.equal(compatible.response_format, undefined); assert.equal(compatible.output_config, undefined); assert.equal(compatible.reasoning, undefined);
   }
   assert.throws(() => responseJson({ choices: [{ finish_reason: 'length', message: { content: '{}' } }] }, 'chat/completions'), /未正常完成/);
   assert.throws(() => responseJson({ stop_reason: 'max_tokens', content: [] }, 'messages'), /未正常完成/);
+});
+
+test('draft and reply schemas constrain required fields and types in all three wire formats', () => {
+  function format(body, protocol) {
+    if (protocol === 'messages') {
+      assert.equal(body.output_config.format.strict, undefined);
+      assert.equal(body.output_config.format.name, undefined);
+      return body.output_config.format;
+    }
+    const result = protocol === 'responses' ? body.text.format : body.response_format.json_schema;
+    assert.equal(result.strict, true);
+    assert.equal(result.name, result.schema.properties.issues ? 'draft_analysis' : 'reply_translation');
+    return result;
+  }
+  function closedObject(schema, fields) {
+    assert.equal(schema.type, 'object');
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(schema.required, fields);
+    assert.deepEqual(Object.keys(schema.properties), fields);
+  }
+  let previousDraft, previousReply;
+  for (const protocol of ['responses', 'chat/completions', 'messages']) {
+    const cfg = parseConfig({ protocol });
+    const draft = format(draftRequest('检查函数', [], cfg).body, protocol).schema;
+    closedObject(draft, ['sourceLanguage', 'translationLanguage', 'translationText', 'correctedEnglish', 'polishedEnglish', 'issues']);
+    assert.deepEqual(draft.properties.sourceLanguage, { type: 'string', enum: ['zh', 'en', 'mixed'] });
+    assert.deepEqual(draft.properties.translationLanguage, { type: 'string', enum: ['zh', 'en'] });
+    for (const field of ['translationText', 'correctedEnglish', 'polishedEnglish']) assert.deepEqual(draft.properties[field], { type: 'string' });
+    assert.equal(draft.properties.issues.type, 'array');
+    closedObject(draft.properties.issues.items, ['original', 'replacement', 'explanationZh']);
+    for (const field of Object.values(draft.properties.issues.items.properties)) assert.deepEqual(field, { type: 'string' });
+    const reply = format(replyRequest({ source: 'Done.' }, [], cfg).body, protocol).schema;
+    closedObject(reply, ['translationZh']);
+    assert.deepEqual(reply.properties.translationZh, { type: 'string' });
+    if (previousDraft) { assert.deepEqual(draft, previousDraft); assert.deepEqual(reply, previousReply); }
+    previousDraft = draft; previousReply = reply;
+    const compatible = replyRequest({ source: 'Done.' }, [], { ...cfg, jsonMode: false }).body;
+    assert.equal(compatible.text, undefined); assert.equal(compatible.response_format, undefined); assert.equal(compatible.output_config, undefined);
+  }
 });
 
 test('usage normalizes cache accounting without double-counting reasoning or Anthropic cache tokens', () => {

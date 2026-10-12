@@ -2,7 +2,7 @@
 
 Claude Code 的中英文语言辅助插件。输入时提供翻译、拼写纠正和表达润色；回复完成后提供中英对照。所有“采用”操作只替换输入框，不自动发送。
 
-使用独立的翻译模型，支持 Responses、Chat Completions 和 Messages 协议。当前版本为 `0.1.0`。
+使用独立的翻译模型，支持 Responses、Chat Completions 和 Messages 协议。当前版本为 `0.1.1`。
 
 ## 安装与启动
 
@@ -112,7 +112,7 @@ claude plugin update english-assistant@english-assistant-marketplace
 
 上下文默认取近期最多 4 条消息，总计最多 6000 字符，省略代码块和工具日志。将两个上下文参数都设为 0 可关闭历史上下文。草稿及上下文会发送到配置的翻译服务；缓存只存在内存中。
 
-Chat 和 Responses 的 `jsonMode: false` 可兼容不支持 JSON 输出参数的服务；提示词仍要求 JSON，返回仍需校验。`reasoningEffort: null` 表示不发送推理参数，默认 `none`。Messages 使用提示词要求 JSON，并在 `none` 时发送 `thinking.type=disabled`，不映射其他推理强度。Messages 默认发送 `anthropic-version: 2023-06-01`。
+默认 `jsonMode: true` 为三种协议发送 JSON Schema，约束必填字段、类型和额外字段：Chat 使用 `response_format.json_schema`，Responses 使用 `text.format`，两者均设置 `strict: true`；Messages 使用 `output_config.format`（`type: json_schema`，无需额外 strict 参数）。输入分析和回复翻译使用独立 schema。三种协议均可设置 `jsonMode: false` 以兼容不支持结构化输出的模型或服务；此时只用提示词要求 JSON，返回仍需校验，不会因服务报错自动降级。`reasoningEffort: null` 表示不发送推理参数，默认 `none`。Messages 在 `none` 时发送 `thinking.type=disabled`，不映射其他推理强度，默认发送 `anthropic-version: 2023-06-01`。
 
 ## Token 统计
 
