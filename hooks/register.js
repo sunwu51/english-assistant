@@ -2,6 +2,7 @@ import {
   DEFAULTS, parseConfig, eligibleDraft, contextFromMessages, draftRequest,
   responseJson, validateDraft, choicesFor, replySegments, replyRequest, restoreLiterals, hasComposerReferences, requestHeaders, normalizedUsage,
 } from './core.js';
+import { parseMarkdownTable, renderTerminalTable } from './table-layout.js';
 
 const PANE = 'ea-bilingual';
 const REFERENCE_NOTICE = '含粘贴或图片引用：仅展示建议，已禁用整框替换；未读取引用背后的内容。';
@@ -233,6 +234,29 @@ async function showReplyPane($, s) {
   $.ui.invalidate('ui.render');
 }
 
+async function recoverLastReply($, s) {
+  if (s.reply) return;
+  if (!s.enabled) { $.ui.toast(s.configError || '英语辅助已关闭，请先开启'); return; }
+  const epoch = s.epoch;
+  try {
+    const messages = await $.session.messages();
+    // A newer completed turn or session switch owns the state if it arrived
+    // while history was being read. Ignore tool-call commentary in history.
+    if (epoch !== s.epoch || s.reply || !s.enabled) return;
+    const message = messages.slice().reverse().find(m => m.role === 'assistant' && m.text?.trim() && !m.toolUses?.length);
+    if (!message) { $.ui.toast('当前会话没有可翻译的助手回复，请先恢复已有会话或完成一轮对话'); return; }
+    s.reply = { turnId: null, source: message.text, status: '等待翻译', error: '', segments: replySegments(message.text, s.cfg.replySegmentChars) };
+    s.replyPending = true;
+    scheduleReply($, s);
+    $.ui.invalidate('ui.render');
+  } catch (error) { $.ui.toast('读取最后回复失败：' + error.message); }
+}
+
+async function openLastReply($, s) {
+  await recoverLastReply($, s);
+  await showReplyPane($, s);
+}
+
 async function hideReplyPane($, s) {
   // Only close our own pane. The host owns native diff/view selection.
   await $.ui.close({ id: PANE });
@@ -317,9 +341,20 @@ function statusText(s) {
   return `英语辅助：${s.enabled ? '开启' : '关闭'}\n模型：${s.cfg.model}\n接口：${s.cfg.endpoint}\n协议：${s.cfg.protocol}；鉴权：${s.authToken && s.cfg.authType !== 'none' ? '已配置' : '无'}\n请求次数：${s.requests}\n${usageText}\n最近耗时：${s.lastLatencyMs === null ? '未测量' : s.lastLatencyMs + ' ms'}\n输入请求槽位：${s.draftBusy ? '占用' : '空闲'}；待处理：${s.draftPending ? '是' : '否'}\n草稿版本：${s.revision}；会话版本：${s.epoch}\n最近 HTTP：${s.lastRequestEvent}\n最近分析：${s.lastDraftEvent}\n最近主会话：${s.lastMainTurn}\n回复翻译：${replyStatus}\n回复请求槽位：${s.replyBusy ? '占用' : '空闲'}；待处理：${s.replyPending ? '是' : '否'}\n最近面板打开：${s.lastPaneOpen}；双语渲染次数：${s.replyRenders}\n${s.configError ? '配置错误：' + s.configError : '采用建议只替换草稿，不发送。'}`;
 }
 
-function markdownChunks(Markdown, text) {
+function markdownChunks(Markdown, Text, text, tableUI) {
   const nodes = [];
-  for (let i = 0; i < text.length; i += 9500) nodes.push(Markdown({ text: text.slice(i, i + 9500) }));
+  // Use the same row boundaries for translated tables and the host's 10k
+  // Markdown limit. Continuations must carry their own header and separator.
+  for (const { source } of replySegments(text, 9500)) {
+    const table = tableUI && parseMarkdownTable(source);
+    if (table && source.length <= 9500) nodes.push(renderTerminalTable(table, tableUI.columns, tableUI));
+    else if (source.length <= 9500) nodes.push(Markdown({ text: source }));
+    else {
+      // A single huge row (or code block) cannot fit one Markdown element.
+      // Preserve it as literal text rather than hand the host broken markup.
+      for (let i = 0; i < source.length; i += 9500) nodes.push(Text({ children: [source.slice(i, i + 9500)] }));
+    }
+  }
   return nodes;
 }
 
@@ -408,7 +443,7 @@ export function register(on, options = {}) {
     return { text: s.enabled ? '英语辅助已开启' : '英语辅助已关闭' };
   });
   on('command.run', { command: 'ea-reply' }, async ($) => {
-    await showReplyPane($, s);
+    await openLastReply($, s);
     return {};
   });
   on('command.run', { command: 'ea-back' }, async ($) => { await hideReplyPane($, s); return {}; });
@@ -471,6 +506,7 @@ export function register(on, options = {}) {
     }
     if (s.undo) nodes.push(Button({ key: 'ea-undo', label: '撤销替换', onPress: () => undoChoice($, s) }));
     if (s.draftError) nodes.push(Button({ key: 'ea-retry-draft', label: '重试', onPress: () => { s.draftError = ''; s.draftPending = true; void analyzeDraft($, s); } }));
+    if (s.enabled && !s.reply) nodes.push(Button({ key: 'ea-recover-reply', label: '翻译当前最后回复', onPress: () => openLastReply($, s) }));
     if (s.enabled && s.reply) nodes.push(Box({ flexDirection: 'row', columnGap: 2, children: [
       Button({ key: 'ea-open-reply', label: '查看最后回复译文 · ' + s.reply.status, onPress: () => showReplyPane($, s) }),
       Button({ key: 'ea-back-panel', label: '收起译文', onPress: () => hideReplyPane($, s) }),
@@ -482,7 +518,11 @@ export function register(on, options = {}) {
     if (e.requestId !== PANE) return next(e);
     s.replyRenders++;
     const { Box, Text, Markdown, Button } = $.ui.resolve(e);
-    if (!s.reply) return Text({ children: ['正常回复结束后会显示中英对照。'] });
+    const tableUI = e.surface === 'terminal' && e.props?.bodyColumns > 0 ? { Box, Text, Markdown, columns: e.props.bodyColumns } : null;
+    if (!s.reply) return Box({ flexDirection: 'column', children: [
+      Text({ children: ['恢复已有会话后，可手动读取最后回复并翻译。'] }),
+      Button({ key: 'ea-recover-reply', label: '翻译当前最后回复', onPress: () => openLastReply($, s) }),
+    ] });
     const reply = s.reply, nodes = [Text({ bold: true, children: [reply.status] })];
     nodes.push(Box({ flexDirection: 'row', columnGap: 2, children: [
       Button({ key: 'ea-back-panel', label: '收起译文', onPress: () => hideReplyPane($, s) }),
@@ -494,10 +534,10 @@ export function register(on, options = {}) {
       s.replyPending = true; scheduleReply($, s);
     } }));
     for (const segment of reply.segments) {
-      if (segment.kind === 'code' || segment.kind === 'unchanged') nodes.push(...markdownChunks(Markdown, segment.source));
+      if (segment.kind === 'code' || segment.kind === 'unchanged') nodes.push(...markdownChunks(Markdown, Text, segment.source, tableUI));
       else {
-        nodes.push(Text({ dimColor: true, children: ['EN'] }), ...markdownChunks(Markdown, segment.source));
-        nodes.push(Text({ dimColor: true, children: ['中文'] }), ...markdownChunks(Markdown, segment.translation || '等待翻译…'));
+        nodes.push(Text({ dimColor: true, children: ['EN'] }), ...markdownChunks(Markdown, Text, segment.source, tableUI));
+        nodes.push(Text({ dimColor: true, children: ['中文'] }), ...markdownChunks(Markdown, Text, segment.translation || '等待翻译…', tableUI));
       }
     }
     return Box({ flexDirection: 'column', rowGap: 1, children: nodes });

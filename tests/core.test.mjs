@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULTS, contextFromMessages, protectLiterals, restoreLiterals, replySegments, replyRequest, responseJson, eligibleDraft, choicesFor, validateDraft, hasComposerReferences, parseConfig, draftRequest, requestHeaders, normalizedUsage } from '../hooks/core.js';
+import { readFileSync } from 'node:fs';
+import { DEFAULTS, contextFromMessages, protectLiterals, restoreLiterals, normalizeReplyMarkdown, replySegments, replyRequest, responseJson, eligibleDraft, choicesFor, validateDraft, hasComposerReferences, parseConfig, draftRequest, requestHeaders, normalizedUsage } from '../hooks/core.js';
 import { register } from '../hooks/register.js';
+import { parseMarkdownTable, renderTerminalTable } from '../hooks/table-layout.js';
 
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
@@ -343,6 +345,112 @@ test('reply segmentation preserves every character and leaves fenced code unchan
     assert.equal(segments.map(s => s.source).join(''), source);
     if (source.includes('foo')) assert.ok(segments.some(s => s.kind === 'code' && s.source.includes('foo')));
   }
+});
+
+const boxedReply = readFileSync(new URL('./fixtures/boxed-reply.txt', import.meta.url), 'utf8').trimEnd();
+
+test('the reported padded table becomes a compact table with logical rows and intact content', () => {
+  const markdown = normalizeReplyMarkdown(boxedReply);
+  const lines = markdown.split('\n');
+  assert.equal(lines.length, 5);
+  assert.equal(lines[0], '| Setup | Changes on the phone |');
+  assert.equal(lines[1], '| --- | --- |');
+  assert.match(lines[2], /DHCP \(recommended end state\) \| None\./);
+  assert.match(lines[4], /ignore it, and UDP traffic/);
+  assert.ok(markdown.length < boxedReply.length / 2);
+  assert.doesNotMatch(markdown, /[┌┐└┘│─]| {3}/);
+  // Padding and physical line wraps are the only content removed.
+  const physicalRows = boxedReply.split(/\r?\n/).filter(line => line.startsWith('│')).map(line => line.slice(1, -1).split('│'));
+  for (const row of physicalRows) for (const cell of row) if (cell.trim()) assert.ok(markdown.includes(cell.trim()));
+  assert.equal(normalizeReplyMarkdown(markdown), markdown);
+});
+
+test('box conversion merges four-column continuations, escapes pipes, and handles CRLF beside prose', () => {
+  const box = ['┌────┬────┬────┬────┐', '│ Name │ Empty │ Command │ Note │', '├────┼────┼────┼────┤',
+    '│ first │  │ a | b │ 中文 │', '│ continued │  │  │ 续行 │', '└────┴────┴────┴────┘'].join('\r\n');
+  assert.equal(normalizeReplyMarkdown('Before\r\n' + box + '\r\nAfter'),
+    'Before\r\n\r\n| Name | Empty | Command | Note |\r\n| --- | --- | --- | --- |\r\n| first continued |  | a \\| b | 中文 续行 |\r\n\r\nAfter');
+});
+
+test('incomplete tables, diagrams, and fenced box examples remain unchanged', () => {
+  for (const input of [boxedReply.slice(0, boxedReply.lastIndexOf('\n')), boxedReply.replace('│ C, proxy port only', '│ extra │ C, proxy port only'),
+    '┌────┬────┐\n│ A │ B │\n└────┴────┘', '┌────┐\n│ diagram │\n└────┘',
+    '```text\n' + boxedReply + '\n```', '~~~~text\n```\n' + boxedReply + '\n~~~~', '```text\n' + boxedReply]) {
+    assert.equal(normalizeReplyMarkdown(input), input);
+  }
+});
+
+test('long Markdown tables split only between complete rows and repeat their headers', () => {
+  const header = '| Name | Description |\r\n| :--- | ---: |\r\n';
+  const rows = Array.from({ length: 80 }, (_, i) => `| item-${i} | ${'Detailed description '.repeat(5)}|\r\n`);
+  const segments = replySegments('Before\r\n\r\n' + header + rows.join('') + '\r\nAfter', 500);
+  const tables = segments.filter(s => s.source.startsWith(header));
+  assert.ok(tables.length > 1);
+  assert.equal(tables.map(s => s.source.slice(header.length)).join(''), rows.join(''));
+  assert.ok(tables.every(s => s.source.length <= 500 && s.source.endsWith('|\r\n')));
+  assert.equal(segments[0].source, 'Before\r\n\r\n');
+  assert.equal(segments.at(-1).source, '\r\nAfter');
+});
+
+test('the pane and translation requests receive the converted reported table', async () => {
+  const h = harness(); await h.start();
+  await h.dispatch('turn.complete', { reason: 'answer', turnId: 'box', answer: boxedReply });
+  await h.advance(1);
+  assert.equal(h.requests.length, 1);
+  assert.match(JSON.stringify(h.requests[0].init), /\| Setup \| Changes on the phone \|/);
+  assert.doesNotMatch(JSON.stringify(h.requests[0].init), /┌─/);
+  const sources = nodes(await h.pane()).filter(n => n.type === 'Markdown').map(n => n.text);
+  assert.equal(sources[0], normalizeReplyMarkdown(boxedReply));
+});
+
+test('a long translated table also respects native Markdown limits without splitting cells', async () => {
+  const h = harness(); await h.start();
+  await h.dispatch('turn.complete', { reason: 'answer', turnId: 'long-table', answer: 'Translate this response.' });
+  await h.advance(1);
+  const header = '| 项目 | 说明 |\n| --- | --- |\n';
+  const rows = Array.from({ length: 300 }, (_, i) => `| 项目${i} | ${'完整单元格内容'.repeat(6)} |\n`);
+  h.requests[0].resolve(apiResponse({ translationZh: header + rows.join('') })); await flush();
+  const tables = nodes(await h.pane()).filter(n => n.type === 'Markdown' && n.text.startsWith(header));
+  assert.ok(tables.length > 1);
+  assert.ok(tables.every(n => n.text.length <= 9500));
+  assert.equal(tables.map(n => n.text.slice(header.length)).join(''), rows.join(''));
+});
+
+test('one oversized table row falls back to literal text without losing its content', async () => {
+  const h = harness({ ...DEFAULTS, translateReplies: false }); await h.start();
+  const table = '| Name | Description |\n| --- | --- |\n| example | ' + '单元格'.repeat(4000) + ' |';
+  await h.dispatch('turn.complete', { reason: 'answer', turnId: 'huge-row', answer: table });
+  const tree = await h.pane();
+  assert.ok(!nodes(tree).some(n => n.type === 'Markdown' && n.text.includes('| example')));
+  const chunks = nodes(tree).filter(n => n.type === 'Text' && n.children?.some(c => typeof c === 'string' && (c.includes('单元格') || c.startsWith('| Name'))));
+  assert.equal(chunks.flatMap(n => n.children).join(''), table);
+  assert.ok(chunks.every(n => n.children[0].length <= 9500));
+});
+
+test('terminal tables use pane width, preserve escaped pipes, and fall back in narrow panes', async () => {
+  const table = '| 项目 | Status | Command | 结果 |\n| --- | --- | --- | --- |\n| 中文😀 | OK | a \\| b | ' + '说明'.repeat(30) + ' |';
+  const parsed = parseMarkdownTable(table);
+  assert.equal(parsed.rows[0][2], 'a | b');
+  const ui = Object.fromEntries(['Box', 'Text', 'Markdown'].map(type => [type, props => ({ type, ...props })]));
+  for (const columns of [40, 80, 144]) {
+    const tree = renderTerminalTable(parsed, columns, ui);
+    assert.ok(tree.width <= columns);
+    for (const row of tree.children.filter(n => n.type === 'Box')) {
+      assert.ok(row.children.reduce((sum, n) => sum + n.width, 0) + 2 * (row.children.length - 1) <= tree.width - 4);
+    }
+    assert.ok(nodes(tree).some(n => n.type === 'Markdown' && n.text === 'a | b'));
+    assert.ok(!nodes(tree).some(n => n.type === 'Markdown' && n.text.startsWith('| 项目')));
+  }
+  const narrow = renderTerminalTable(parsed, 12, ui);
+  assert.equal(narrow.width, 12);
+  assert.ok(nodes(narrow).some(n => n.type === 'Text' && n.children[0] === 'Command'));
+  assert.ok(nodes(narrow).some(n => n.type === 'Markdown' && n.text === 'a | b'));
+
+  const h = harness({ ...DEFAULTS, translateReplies: false }); await h.start();
+  await h.dispatch('turn.complete', { reason: 'answer', turnId: 'terminal', answer: table });
+  const tree = await h.dispatch('ui.render', { component: 'Pane', requestId: 'ea-bilingual', surface: 'terminal', props: { bodyColumns: 80 } });
+  assert.ok(nodes(tree).some(n => n.type === 'Markdown' && n.text === 'a | b'));
+  assert.ok(!nodes(tree).some(n => n.type === 'Markdown' && n.text.startsWith('| 项目')));
 });
 test('context honors count and size bounds and excludes the current reply', () => {
   const messages = [{ role: 'user', text: 'old' }, { role: 'assistant', text: 'a'.repeat(3000) }, { role: 'user', text: 'question' }, { role: 'assistant', text: 'answer' }];

@@ -244,29 +244,111 @@ export function validateDraft(value, source) {
   return result;
 }
 
+// Only convert complete, rectangular box tables. Diagrams and fenced examples
+// are left alone; horizontal rules distinguish logical rows from wrapped cells.
+export function normalizeReplyMarkdown(text) {
+  const lines = text.match(/[^\n]*\n|[^\n]+$/g) || [];
+  const output = [];
+  let fence = null;
+  const cell = value => value.trim().replace(/(?<!\\)\|/g, '\\|');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\r?\n$/, '');
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (fence) {
+      output.push(lines[i]);
+      if (marker && marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) fence = null;
+      continue;
+    }
+    if (marker) { fence = { char: marker[1][0], length: marker[1].length }; output.push(lines[i]); continue; }
+    const top = line.match(/^ {0,3}┌(─+(?:┬─+)+)┐\s*$/);
+    if (!top) { output.push(lines[i]); continue; }
+    const columns = top[1].split('┬').length;
+    const rule = new RegExp('^ {0,3}├─+(?:┼─+){' + (columns - 1) + '}┤\\s*$');
+    const bottom = new RegExp('^ {0,3}└─+(?:┴─+){' + (columns - 1) + '}┘\\s*$');
+    const rows = [];
+    let current = [], end = -1, valid = true;
+    const finishRow = () => {
+      if (!current.length) { valid = false; return; }
+      rows.push(Array.from({ length: columns }, (_, c) => current.map(row => row[c].trim()).filter(Boolean).join(' ')));
+      current = [];
+    };
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].replace(/\r?\n$/, '');
+      if (bottom.test(next)) { finishRow(); end = j; break; }
+      if (rule.test(next)) { finishRow(); if (!valid) break; continue; }
+      const content = next.match(/^ {0,3}│(.*)│\s*$/);
+      if (!content) break;
+      const cells = content[1].split('│');
+      if (cells.length !== columns) break;
+      current.push(cells);
+    }
+    if (end < 0 || !valid || rows.length < 2) { output.push(lines[i]); continue; }
+    const eol = lines[i].endsWith('\r\n') ? '\r\n' : '\n';
+    const render = row => '| ' + row.map(cell).join(' | ') + ' |';
+    const table = [render(rows[0]), render(Array(columns).fill('---')), ...rows.slice(1).map(render)].join(eol);
+    // A table needs its own block even when the source sits against prose.
+    if (i > 0 && lines[i - 1].trim()) output.push(eol);
+    output.push(table + (/\n$/.test(lines[end]) ? eol : ''));
+    if (end + 1 < lines.length && lines[end + 1].trim()) output.push(eol);
+    i = end;
+  }
+  return output.join('');
+}
+
+function tableBlocks(text) {
+  const lines = text.match(/[^\n]*\n|[^\n]+$/g) || [];
+  const blocks = [];
+  let prose = '';
+  const separator = /^ {0,3}\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/;
+  for (let i = 0; i < lines.length; i++) {
+    if (!/(?<!\\)\|/.test(lines[i]) || !separator.test((lines[i + 1] || '').trimEnd())) { prose += lines[i]; continue; }
+    if (prose) { blocks.push({ kind: 'prose', source: prose }); prose = ''; }
+    const header = lines[i] + lines[i + 1], rows = [];
+    i += 2;
+    while (i < lines.length && lines[i].trim() && /(?<!\\)\|/.test(lines[i])) rows.push(lines[i++]);
+    blocks.push({ kind: 'table', header, rows });
+    i--;
+  }
+  if (prose) blocks.push({ kind: 'prose', source: prose });
+  return blocks;
+}
+
 export function replySegments(text, maxChars) {
+  text = normalizeReplyMarkdown(text);
   const blocks = text.match(/^(?: {0,3})(?:```|~~~)[^\n]*\n[\s\S]*?(?:^ {0,3}(?:```|~~~)[^\n]*(?:\n|$)|(?![\s\S]))|[\s\S]+?(?=^ {0,3}(?:```|~~~)|$(?![\s\S]))/gm) || [text];
   const segments = [];
   for (const block of blocks) {
     if (/^ {0,3}(?:```|~~~)/.test(block)) { segments.push({ id: `p${segments.length}`, source: block, kind: 'code' }); continue; }
-    for (const paragraph of block.split(/(?<=\n\n)/)) {
-      let rest = paragraph;
-      while (rest.length) {
-        let cut = Math.min(maxChars, rest.length);
-        if (cut < rest.length) {
-          const boundary = Math.max(rest.lastIndexOf('\n', cut), rest.lastIndexOf(' ', cut));
-          if (boundary > maxChars / 2) cut = boundary + 1;
-          // Never cut through a backtick span, URL, or surrogate pair.
-          const protectedSource = protectLiterals(rest);
-          for (const literal of protectedSource.literals) {
-            const start = rest.indexOf(literal.source);
-            if (start < cut && start + literal.source.length > cut) cut = start > 0 ? start : start + literal.source.length;
-          }
-          if (/[\uD800-\uDBFF]/.test(rest[cut - 1] || '')) cut++;
+    for (const part of tableBlocks(block)) {
+      if (part.kind === 'table') {
+        let source = part.header;
+        const push = () => segments.push({ id: `p${segments.length}`, source, kind: /[A-Za-z]{2}/.test(source) ? 'text' : 'unchanged' });
+        for (const row of part.rows) {
+          if (source !== part.header && source.length + row.length > maxChars) { push(); source = part.header; }
+          source += row;
         }
-        const source = rest.slice(0, cut);
-        segments.push({ id: `p${segments.length}`, source, kind: /[A-Za-z]{2}/.test(source) ? 'text' : 'unchanged' });
-        rest = rest.slice(cut);
+        push();
+        continue;
+      }
+      for (const paragraph of part.source.split(/(?<=\n\n)/)) {
+        let rest = paragraph;
+        while (rest.length) {
+          let cut = Math.min(maxChars, rest.length);
+          if (cut < rest.length) {
+            const boundary = Math.max(rest.lastIndexOf('\n', cut), rest.lastIndexOf(' ', cut));
+            if (boundary > maxChars / 2) cut = boundary + 1;
+            // Never cut through a backtick span, URL, or surrogate pair.
+            const protectedSource = protectLiterals(rest);
+            for (const literal of protectedSource.literals) {
+              const start = rest.indexOf(literal.source);
+              if (start < cut && start + literal.source.length > cut) cut = start > 0 ? start : start + literal.source.length;
+            }
+            if (/[\uD800-\uDBFF]/.test(rest[cut - 1] || '')) cut++;
+          }
+          const source = rest.slice(0, cut);
+          segments.push({ id: `p${segments.length}`, source, kind: /[A-Za-z]{2}/.test(source) ? 'text' : 'unchanged' });
+          rest = rest.slice(cut);
+        }
       }
     }
   }

@@ -93,9 +93,13 @@ URL：`http://localhost:4444/v1/responses`。唯一请求头是 `Content-Type: a
 
 ## 译文面板的打开与收起
 
+回复进入 `replySegments` 时，`normalizeReplyMarkdown` 先识别代码块以外的完整字符边框表格。水平分隔线区分逻辑行，同一行内的物理续行按列合并，去除对齐空格并转义竖线，再输出 Markdown；原始 `s.reply.source` 仍用于上下文排除。翻译请求按完整表格行分段，续段重复表头与分隔行。译文渲染同样按行拆分，避免 9500 字符处截断表格；单个无法容纳的超长行或代码块使用普通文本展示。
+
+终端的原生 Markdown 表格在本机仍可能按大于 panel 的宽度排版。`hooks/table-layout.js` 因此将表格拆成受 `e.props.bodyColumns` 约束的列容器，单元格仍通过 Markdown 绘制，内容由容器宽度限制并折行；极窄面板逐字段展示。desktop 继续使用原生 Markdown 表格。
+
 `turn.complete` 默认仅安排后台翻译。`autoOpenReplyPane: true` 才自动打开译文面板，不请求焦点；默认值为 false。`showReplyPane` 由查看按钮或 `/ea-reply` 调用，使用 `ui.open` 请求显示 `ea-bilingual`。`hideReplyPane` 由提示区/面板的收起按钮或 `/ea-back` 调用，仅执行 `ui.close({id: PANE})` 并刷新 UI。
 
-这些操作不清空 `s.reply`，不回填或发送输入，也不请求重新翻译。关闭后再次打开使用已有译文。`ui.panes()` 只列出本插件的面板，无法保存或选中某个内置 diff。
+这些操作不清空 `s.reply`，不回填或发送输入。关闭后再次打开使用已有译文。重启或重载后 `s.reply` 为空时，`/ea-reply` 和“翻译当前最后回复”按钮通过 `recoverLastReply` 调用 `$.session.messages()`，读取最近一条非空且不含工具调用的助手消息，再安排翻译；恢复过程检查 epoch 和 reply 状态，避免覆盖会话切换或新回复。手动操作不受自动翻译开关 `translateReplies` 限制，但仍要求辅助功能开启。不会将译文写入磁盘。`ui.panes()` 只列出本插件的面板，无法保存或选中某个内置 diff。
 
 手动 `showReplyPane` 先执行 `ui.close({id:'diff'})` 再打开 EA，避免原生 diff 已打开时 EA 只被放置却没有显示。该调用由宿主标为 plugin origin；本机原生 diff 的 close Hook 会清除 open 状态，而用户手动关闭时才保存关闭偏好。这里针对本机原生 pane id `diff`，不读写原生插件内部状态。
 

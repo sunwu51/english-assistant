@@ -5,6 +5,59 @@ const scroll = { offset: 0, bodyRows: 30, totalRows: 30 };
 const bandProps = { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 100, scroll, view: {} };
 const paneProps = { title: '中英对照', isFocused: false, bodyColumns: 100, placement: 'inline' as const, scroll, view: {} };
 
+test('resumed history can be translated manually without a new completed turn', async ($, on) => {
+  const clock = mock.clock(on);
+  let requests = 0;
+  const answer = '| Name | Notes |\n| --- | --- |\n| Gateway | A longer description that should wrap inside its own cell. |';
+  on('session.start', (_, e) => ({ cwd: e.cwd }));
+  on('command.register', (_, e) => ({ value: { command: e.name } }));
+  on('fs.read', () => ({ value: JSON.stringify({ ...DEFAULTS, translateReplies: false }) }));
+  on('ui.invalidate', () => ({ value: undefined }));
+  on('ui.render', ($, e) => $.ui.resolve(e).Box({ children: [] }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('ui.close', () => ({ value: undefined }));
+  on('session.messages', () => ({ value: [
+    { role: 'assistant', text: 'An older answer.', toolUses: [] },
+    { role: 'user', text: 'Show a table.', toolUses: [] },
+    { role: 'assistant', text: answer, toolUses: [] },
+    { role: 'assistant', text: 'Tool commentary.', toolUses: [{ id: 'tool', name: 'Read', input: {} }] },
+  ] }));
+  on('http.fetch', (_, e) => {
+    requests++;
+    expect(e.init!.body!.includes('A longer description')).toBe(true);
+    return { value: { ok: true, status: 200, headers: {}, text: JSON.stringify({ status: 'completed', output_text: JSON.stringify({ translationZh: '| 名称 | 说明 |\n| --- | --- |\n| 网关 | 在单元格内换行的描述。 |' }) }) } };
+  });
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true });
+  const band = await $.ui.mount({ plugin: 'english-assistant', surface: 'terminal', component: 'AbovePrompt', props: bandProps });
+  await band.press({ key: 'ea-recover-reply' });
+  await clock.advance(1); await clock.settle();
+  const pane = await $.ui.mount({ plugin: 'english-assistant', surface: 'terminal', component: 'Pane', requestId: 'ea-bilingual', props: paneProps });
+  expect(await pane.find({ type: 'Markdown', text: 'A longer description' })).toBeDefined();
+  expect(await pane.find({ type: 'Markdown', text: '在单元格内换行' })).toBeDefined();
+  await $.command.run({ command: 'ea-reply' });
+  await clock.advance(1); await clock.settle();
+  expect(requests).toBe(1);
+  await pane.unmount(); await band.unmount();
+});
+
+test('manual reply command reports empty history and keeps a recovery button', async ($, on) => {
+  let notice = '';
+  on('session.start', (_, e) => ({ cwd: e.cwd }));
+  on('command.register', (_, e) => ({ value: { command: e.name } }));
+  on('fs.read', () => ({ value: JSON.stringify(DEFAULTS) }));
+  on('session.messages', () => ({ value: [{ role: 'user', text: 'Hello', toolUses: [] }] }));
+  on('ui.invalidate', () => ({ value: undefined }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('ui.close', () => ({ value: undefined }));
+  on('ui.toast', (_, e) => { notice = JSON.stringify(e); return { value: undefined }; });
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true });
+  await $.command.run({ command: 'ea-reply' });
+  expect(notice.includes('没有可翻译')).toBe(true);
+  const pane = await $.ui.mount({ plugin: 'english-assistant', surface: 'terminal', component: 'Pane', requestId: 'ea-bilingual', props: paneProps });
+  expect(await pane.find({ key: 'ea-recover-reply' })).toBeDefined();
+  await pane.unmount();
+});
+
 test('native diff switch runs after the command hook releases its turn', async ($, on) => {
   const clock = mock.clock(on);
   let calls = 0, closes = 0;
@@ -154,6 +207,28 @@ test('native pane renders a translated completed reply and untouched code', asyn
     expect(await ui.find({ type: 'Markdown', text: 'foo();' })).toBeDefined();
     await ui.unmount();
   }
+});
+
+test('terminal table cells use supported native elements at the pane width', async ($, on) => {
+  on('session.start', (_, e) => ({ cwd: e.cwd }));
+  on('command.register', (_, e) => ({ value: { command: e.name } }));
+  on('ui.invalidate', () => ({ value: undefined }));
+  on('turn.complete', (_, e) => ({ text: e.answer }));
+  on('fs.read', () => ({ value: JSON.stringify({ ...DEFAULTS, translateReplies: false }) }));
+  await $.session.start({ cwd: '.', surface: 'terminal', isInteractive: true });
+  const answer = '┌────┬────┬────┬────┐\n│ Name │ Status │ Command │ Note │\n├────┼────┼────┼────┤\n│ first │ OK │ a | b │ 中文 │\n│ continued │  │  │ 续行 │\n└────┴────┴────┴────┘';
+  await $.turn.complete({ answer, reason: 'answer', durationMs: 1, isAborted: false, turnId: 'table-width' });
+  for (const bodyColumns of [12, 40, 100]) {
+    const ui = await $.ui.mount({ plugin: 'english-assistant', surface: 'terminal', component: 'Pane', requestId: 'ea-bilingual', props: { ...paneProps, bodyColumns } });
+    expect(await ui.find({ type: 'Markdown', text: 'first continued' })).toBeDefined();
+    expect(await ui.find({ type: 'Markdown', text: 'a | b' })).toBeDefined();
+    expect(await ui.find({ type: 'Markdown', text: '中文 续行' })).toBeDefined();
+    expect(await ui.find({ type: 'Markdown', text: '| Name | Status |' })).toBeUndefined();
+    await ui.unmount();
+  }
+  const desktop = await $.ui.mount({ plugin: 'english-assistant', surface: 'desktop', component: 'Pane', requestId: 'ea-bilingual', props: paneProps });
+  expect(await desktop.find({ type: 'Markdown', text: '| Name | Status |' })).toBeDefined();
+  await desktop.unmount();
 });
 
 test('native reply band and pane close diff before opening EA without regenerating translation', async ($, on) => {
