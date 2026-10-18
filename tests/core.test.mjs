@@ -436,7 +436,7 @@ test('terminal tables use pane width, preserve escaped pipes, and fall back in n
     const tree = renderTerminalTable(parsed, columns, ui);
     assert.ok(tree.width <= columns);
     for (const row of tree.children.filter(n => n.type === 'Box')) {
-      assert.ok(row.children.reduce((sum, n) => sum + n.width, 0) + 2 * (row.children.length - 1) <= tree.width - 4);
+      assert.ok(row.children.reduce((sum, n) => sum + n.width, 0) <= tree.width - 4);
     }
     assert.ok(nodes(tree).some(n => n.type === 'Markdown' && n.text === 'a | b'));
     assert.ok(!nodes(tree).some(n => n.type === 'Markdown' && n.text.startsWith('| 项目')));
@@ -451,6 +451,27 @@ test('terminal tables use pane width, preserve escaped pipes, and fall back in n
   const tree = await h.dispatch('ui.render', { component: 'Pane', requestId: 'ea-bilingual', surface: 'terminal', props: { bodyColumns: 80 } });
   assert.ok(nodes(tree).some(n => n.type === 'Markdown' && n.text === 'a | b'));
   assert.ok(!nodes(tree).some(n => n.type === 'Markdown' && n.text.startsWith('| 项目')));
+});
+test('terminal table widths ignore link destinations and rails span wrapped rows', () => {
+  const ui = Object.fromEntries(['Box', 'Text', 'Markdown'].map(type => [type, props => ({ type, ...props })]));
+  const description = 'September model: Intelligence Index 39-40 (max reasoning), 25 (non-reasoning)';
+  const destination = 'https://example.com/' + 'long-path/'.repeat(35) + 'model_(details)';
+  const makeTable = label => ({ header: ['Leaderboard', 'Current listing', 'Updated?'], rows: [[label, description, 'No. Page is about 36 days old']] });
+  const plain = renderTerminalTable(makeTable('Artificial Analysis'), 100, ui);
+  const linked = renderTerminalTable(makeTable(`[Artificial Analysis](${destination})`), 100, ui);
+  const widths = tree => tree.children[0].children.filter(n => n.flexDirection === 'column').map(n => n.width);
+  assert.deepEqual(widths(linked), widths(plain));
+  assert.ok(widths(linked)[0] < widths(linked)[1]);
+  assert.ok(nodes(linked).some(n => n.type === 'Markdown' && n.text.includes(destination)));
+  for (const row of linked.children.filter(n => n.type === 'Box')) {
+    const rails = row.children.filter(n => n.overflow === 'hidden');
+    assert.equal(rails.length, 2);
+    assert.ok(rails.every(n => n.children[0].top === -1 && n.children[0].bottom === -1));
+  }
+  assert.ok(linked.children.filter(n => n.type === 'Text').every(n => n.children[0].split('┼').length === 3));
+  assert.deepEqual(widths(renderTerminalTable(makeTable('**Artificial Analysis**'), 100, ui)), widths(plain));
+  assert.deepEqual(widths(renderTerminalTable(makeTable('`Artificial Analysis`'), 100, ui)), widths(plain));
+  assert.deepEqual(widths(renderTerminalTable(makeTable('[`Artificial Analysis`](' + destination + ')'), 100, ui)), widths(plain));
 });
 test('context honors count and size bounds and excludes the current reply', () => {
   const messages = [{ role: 'user', text: 'old' }, { role: 'assistant', text: 'a'.repeat(3000) }, { role: 'user', text: 'question' }, { role: 'assistant', text: 'answer' }];

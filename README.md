@@ -2,7 +2,7 @@
 
 Claude Code 的中英文语言辅助插件。输入时提供翻译、拼写纠正和表达润色；回复完成后提供中英对照。所有“采用”操作只替换输入框，不自动发送。
 
-使用独立的翻译模型，支持 Responses、Chat Completions 和 Messages 协议。当前版本为 `0.1.2`。
+使用独立的翻译模型，支持 Responses、Chat Completions 和 Messages 协议。当前版本为 `0.1.3`。
 
 ## 安装与启动
 
