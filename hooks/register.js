@@ -264,10 +264,23 @@ async function hideReplyPane($, s) {
   $.ui.invalidate('ui.render');
 }
 
+async function inApp($) {
+  try { return (await $.session.surfaces()).some(surface => surface !== 'terminal'); } catch { return false; }
+}
+
 async function showDiffPane($, s) {
   try {
     const commands = await $.command.list();
-    if (!commands.some(command => command.name === 'diff')) throw new Error('当前 Claude 没有可用的 /diff 命令');
+    if (!commands.some(command => command.name === 'diff')) {
+      // The desktop app's Diff pane belongs to the app, not the engine: it has
+      // no /diff command and the plugin API cannot open it. Hand the space back.
+      if (!await inApp($)) throw new Error('当前 Claude 没有可用的 /diff 命令');
+      await hideReplyPane($, s);
+      s.lastPaneOpen = '已收起译文；Claude App 无 /diff 命令，请用 App 的 Diff 面板查看代码修改';
+      $.ui.toast(s.lastPaneOpen);
+      $.ui.invalidate('ui.render');
+      return;
+    }
     await hideReplyPane($, s);
     let result = await $.command.run({ command: 'diff', args: '' });
     // /diff toggles its own state, which ui.panes() cannot inspect. If it

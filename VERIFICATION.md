@@ -2,7 +2,11 @@
 
 日期：2026-10-05（Asia/Singapore）。本机 Claude Code：2.1.289。
 
-当前源码版本为 `0.1.3`。本轮未更新本机 marketplace 安装。下文的 0.2.0/0.2.1 是此前调试记录中的临时版本号，功能与测试结果保留。
+当前源码版本为 `0.1.4`。本轮未更新本机 marketplace 安装。下文的 0.2.0/0.2.1 是此前调试记录中的临时版本号，功能与测试结果保留。
+
+### 0.1.4：Claude 桌面 App 中的查看代码 diff
+
+Claude 桌面 App 没有 `/diff` 命令，插件 API 也不能打开 App 自带的 Diff 面板。通过 `$.session.surfaces()` 判断在 App 中时，“查看代码 diff”与 `/ea-diff` 只收起 EA 并提示使用 App 的 Diff 面板，不再报错；终端行为不变。39 项 Node 测试及 `claude plugin validate` 通过；尚未在真实 App 中现场验证。
 
 ### 0.1.3：列间竖线与链接列宽
 

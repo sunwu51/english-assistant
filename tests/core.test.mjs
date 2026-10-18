@@ -96,6 +96,21 @@ test('switch to native diff closes only EA and opens diff even when the command 
   assert.equal(closed.length, 2);
 });
 
+test('in the desktop app without /diff, view diff closes EA and points to the app Diff pane', async () => {
+  const h = harness({ ...DEFAULTS, translateReplies: false }); await h.start();
+  const closed = [], called = [];
+  h.$.ui.close = async args => closed.push(args.id);
+  h.$.session.surfaces = async () => ['desktop'];
+  h.$.command.list = async () => [{ name: 'ea-diff' }];
+  h.$.command.run = async args => { called.push(args.command); return {}; };
+  await h.dispatch('turn.complete', { turnId: 'app-reply', reason: 'answer', answer: 'Done.' });
+  await button(await h.pane(), 'ea-show-diff').onPress();
+  await h.advance(1);
+  assert.deepEqual(closed, ['ea-bilingual']); assert.deepEqual(called, []);
+  assert.match(h.toasts.at(-1), /App 的 Diff 面板/);
+  assert.doesNotMatch(h.toasts.at(-1), /失败/);
+});
+
 test('global usage survives reload and combines separate concurrent loads without resetting', async () => {
   const disk = new Map();
   const a = harness(DEFAULTS, {}, disk), b = harness(DEFAULTS, {}, disk);

@@ -2,7 +2,7 @@
 
 Claude Code 的中英文语言辅助插件。输入时提供翻译、拼写纠正和表达润色；回复完成后提供中英对照。所有“采用”操作只替换输入框，不自动发送。
 
-使用独立的翻译模型，支持 Responses、Chat Completions 和 Messages 协议。当前版本为 `0.1.3`。
+使用独立的翻译模型，支持 Responses、Chat Completions 和 Messages 协议。当前版本为 `0.1.4`。
 
 ## 安装与启动
 
@@ -132,7 +132,7 @@ claude plugin update english-assistant@english-assistant-marketplace
 ## 排查与限制
 
 - `/ea-status` 不存在时，先检查 `/plugin` 的安装、启用和 Errors 状态。Mods 加载还取决于 Claude 的功能开关、版本及组织策略，版本新不代表一定启用；本机历史问题与验证过程见 [VERIFICATION.md](VERIFICATION.md)。
-- 原生 diff 没显示时可以点击“查看代码 diff”或执行 `/ea-diff`，也可以直接运行 `/diff`。本机全屏终端的原生 diff 至少需要 110 列，EA 手动面板可在窄终端显示；当前目录还需要是 Git 仓库。命令不可用或宿主拒绝时显示具体原因。自动打开 diff 仍取决于原生插件的偏好与加载状态。
+- 原生 diff 没显示时可以点击“查看代码 diff”或执行 `/ea-diff`，也可以直接运行 `/diff`。本机全屏终端的原生 diff 至少需要 110 列，EA 手动面板可在窄终端显示；当前目录还需要是 Git 仓库。命令不可用或宿主拒绝时显示具体原因。Claude 桌面 App 没有 `/diff` 命令，插件 API 也无法打开 App 自带的 Diff 面板；在 App 中点击“查看代码 diff”或执行 `/ea-diff` 只收起 EA，并提示改用 App 的 Diff 面板。自动打开 diff 仍取决于原生插件的偏好与加载状态。
 - 当前 HTTP Mods API 没有 AbortSignal。`requestTimeoutMs` 仅结束 UI 等待，不会中断物理请求；输入分析和回复翻译各最多一个物理请求，新草稿只保留最新待处理版本。
 - 返回结果会校验 JSON、语言字段、代码占位符和草稿版本；语义仍需用户审阅。
 - 当前不支持读取或保留回填附件载荷，也不支持逐字流式翻译。
